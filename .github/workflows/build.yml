@@ -1,0 +1,59 @@
+name: Build APK
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # settings.gradle.kts がルートにあればそのまま、なければルートのzipを展開して探す
+      - name: Locate project
+        run: |
+          set -e
+          if [ -f settings.gradle.kts ]; then
+            DIR=.
+          else
+            ZIP=$(ls -t ./*.zip 2>/dev/null | head -n1 || true)
+            if [ -z "$ZIP" ]; then echo "リポジトリ直下にzipがありません"; exit 1; fi
+            mkdir -p _src
+            unzip -q -o "$ZIP" -d _src
+            F=$(find _src -name settings.gradle.kts -not -path '*/__MACOSX/*' | head -n1)
+            if [ -z "$F" ]; then echo "zip内にsettings.gradle.ktsがありません"; exit 1; fi
+            DIR=$(dirname "$F")
+          fi
+          echo "PROJECT_DIR=$DIR" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Build
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: gradle assembleDebug --no-daemon
+
+      - name: Rename APK
+        run: cp "$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk" detox-launcher.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: detox-launcher-apk
+          path: detox-launcher.apk
+
+      # スマホから直接ダウンロードしやすいよう Releases にも置く
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "build-${{ github.run_number }}" detox-launcher.apk \
+            --title "Build ${{ github.run_number }}" --notes "Debug APK"
